@@ -24,6 +24,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	client "github.com/emersion/go-imap/v2/imapclient"
 
+	"io"
 	"math"
 	"sort"
 	"time"
