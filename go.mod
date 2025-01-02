@@ -1,9 +1,8 @@
-module github.com/mlnoga/go-imap-backup
+module github.com/ctolnik/go-imap-backup
 
-go 1.17
+go 1.22
 
 require (
-	github.com/emersion/go-imap v1.2.1
 	github.com/emersion/go-imap/v2 v2.0.0-beta.4
 	github.com/emersion/go-message v0.18.1
 	github.com/schollz/progressbar/v3 v3.12.1

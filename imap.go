@@ -24,9 +24,6 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	client "github.com/emersion/go-imap/v2/imapclient"
 
-	// "github.com/emersion/go-imap"
-	// "github.com/emersion/go-imap/client"
-	"io"
 	"math"
 	"sort"
 	"time"
@@ -48,20 +45,6 @@ func ListFolders(c *client.Client) ([]string, error) {
 		log.Printf(" - %v", folder.Mailbox)
 		mailboxes = append(mailboxes, folder.Mailbox)
 	}
-
-	// mailboxesCh := make(chan *imap.MailboxInfo, 10)
-	// listOptions := &imap.ListOptions{ReturnSubscribed: true}
-	// done := make(chan error, 1)
-	// go func() {
-	// 	done <- c.List("", "*", mailboxesCh)
-	// }()
-
-	// for m := range mailboxesCh {
-	// 	mailboxes = append(mailboxes, m.Name)
-	// }
-	// if err := <-done; err != nil {
-	// 	return nil, err
-	// }
 
 	sort.Strings(mailboxes)
 	return mailboxes, nil
@@ -171,35 +154,6 @@ func (f *ImapFolderMeta) DownloadTo(c *client.Client, lf *LocalFolder, bar *pb.P
 		log.Fatalf("FETCH command failed: %v", err)
 	}
 
-	// // process messages received
-	// for msg := range messages {
-	// 	// print progress
-	// 	if err := bar.Add64(int64(msg.Size)); err != nil {
-	// 		return err
-	// 	}
-
-	// 	// read message into memory
-	// 	r := msg.GetBody(section)
-	// 	if r == nil {
-	// 		return fmt.Errorf("server didn't return message body")
-	// 	}
-	// 	bs, err := io.ReadAll(r)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-
-	// 	var env string
-	// 	if len(msg.Envelope.From) > 0 {
-	// 		env = msg.Envelope.From[0].Address()
-	// 	}
-	// 	date := msg.Envelope.Date
-	// 	if err := lf.Append(mbox.UidValidity, msg.Uid, env, date, bs); err != nil {
-	// 		return err
-	// 	}
-	// }
-	// if err := <-done; err != nil {
-	// 	return err
-	// }
 	return nil
 }
 
@@ -216,28 +170,12 @@ func DeleteMessagesBefore(c *client.Client, folderName string, before time.Time)
 	uidMsg, err := c.UIDSearch(&imap.SearchCriteria{
 		Before: before,
 	}, nil).Wait()
-	// ids, err := findMessagesBefore(c, before)
-	// if err != nil {
-	// 	return 0, err
-	// }
 	if uidMsg.All != nil {
 		deleteMessages(c, uidMsg.All)
 		return len(uidMsg.AllUIDs())
 	}
 	return 0
-	// if len(ids) == 0 {
-	// 	return 0, nil
-	// }
-
-	// return len(ids), nil
 }
-
-// func findMessagesBefore(c *client.Client, before time.Time) (imap.NumSet, error) {
-// 	data, err := c.UIDSearch(&imap.SearchCriteria{
-// 		Before: before,
-// 	}, nil).Wait()
-// 	return data.All, err
-// }
 
 func deleteMessages(c *client.Client, ids imap.NumSet) {
 	storeFlags := imap.StoreFlags{

@@ -27,8 +27,6 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	client "github.com/emersion/go-imap/v2/imapclient"
-
-	// "github.com/emersion/go-imap/client"
 	pb "github.com/schollz/progressbar/v3"
 )
 
@@ -291,13 +289,6 @@ func cmdDelete(c *client.Client, folderNames []string) (err error) {
 	for _, folderName := range folderNames {
 		bar.Describe("Delete " + folderName)
 		DeleteMessagesBefore(c, folderName, before)
-		// if err != nil {
-		// 	return err
-		// }
-		// totalDeleted += int64(numDeleted)
-		// if err := bar.Add(1); err != nil {
-		// 	return err
-		// }
 	}
 
 	fmt.Printf("Total %d message deleted\n", totalDeleted)
@@ -440,8 +431,6 @@ func cmdRestore(c *client.Client) (err error) {
 				log.Printf("Validity %d uid %d: Warning: Unable to parse received time, using dummy", mm.UidValidity, mm.Uid)
 			}
 
-			// buf := []byte("From: <root@nsa.gov>\r\n\r\nHi <3")
-			// size := int64(len(buf))
 			appendCmd := c.Append(f.Name, size, nil)
 			if _, err := appendCmd.Write(buf); err != nil {
 				log.Fatalf("failed to write message: %v", err)
@@ -453,9 +442,6 @@ func cmdRestore(c *client.Client) (err error) {
 				log.Fatalf("APPEND command failed: %v", err)
 			}
 
-			// if err := c.Append(f.Name, nil, receivedTime, msgBuffer); err != nil { // then read the original here
-			// 	log.Fatal(err)
-			// }
 			if err := bar.Add64(size); err != nil {
 				return err
 			}
