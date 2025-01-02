@@ -25,7 +25,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/emersion/go-imap/client"
+	"github.com/emersion/go-imap/v2"
+	client "github.com/emersion/go-imap/v2/imapclient"
+
+	// "github.com/emersion/go-imap/client"
 	pb "github.com/schollz/progressbar/v3"
 )
 
@@ -50,8 +53,8 @@ func cmdRemote(cmd string) (err error) {
 
 	// Login
 	bar.Describe("Login")
-	if err := c.Login(user, pass); err != nil {
-		return err
+	if err := c.Login(user, pass).Wait(); err != nil {
+		log.Fatalf("failed to login: %v", err)
 	}
 	if err := bar.Add(1); err != nil {
 		return err
@@ -287,14 +290,14 @@ func cmdDelete(c *client.Client, folderNames []string) (err error) {
 	totalDeleted := int64(0)
 	for _, folderName := range folderNames {
 		bar.Describe("Delete " + folderName)
-		numDeleted, err := DeleteMessagesBefore(c, folderName, before)
-		if err != nil {
-			return err
-		}
-		totalDeleted += int64(numDeleted)
-		if err := bar.Add(1); err != nil {
-			return err
-		}
+		DeleteMessagesBefore(c, folderName, before)
+		// if err != nil {
+		// 	return err
+		// }
+		// totalDeleted += int64(numDeleted)
+		// if err := bar.Add(1); err != nil {
+		// 	return err
+		// }
 	}
 
 	fmt.Printf("Total %d message deleted\n", totalDeleted)
@@ -372,17 +375,21 @@ func cmdRestore(c *client.Client) (err error) {
 		}
 		totalMsgs += uint32(len(folders[i].Messages))
 		totalSize += folders[i].Size
-
+		fmt.Println("Begin - ----------------------")
 		remFolders[i], err = NewImapFolderMeta(c, folderName)
 		if err != nil {
-			if !strings.HasPrefix(err.Error(), "Mailbox doesn't exist") {
-				return err
-			}
+			// if !strings.HasPrefix(err.Error(), "Mailbox doesn't exist") {
+			// 	return err
+			// }
 			// create folder on IMAP server if it doesn't exist
-			err = c.Create(folderName)
-			if err != nil {
-				return err
-			}
+			createOptions := &imap.CreateOptions{}
+			fmt.Println("Creating folder")
+			created := c.Create(folderName, createOptions)
+			log.Println(created)
+			fmt.Println("Folder has been created")
+			// if err != nil {
+			// 	return err
+			// }
 			remFolders[i], err = NewImapFolderMeta(c, folderName)
 			if err != nil {
 				return err
@@ -424,16 +431,32 @@ func cmdRestore(c *client.Client) (err error) {
 				return err
 			}
 
-			l := msgBuffer.Len()
-			clonedBuffer := bytes.NewBuffer(msgBuffer.Bytes())    // clone buffer so we can read it twice
+			size := int64(msgBuffer.Len())
+			buf := msgBuffer.Bytes()
+			clonedBuffer := bytes.NewBuffer(buf)                  // clone buffer so we can read it twice
 			receivedTime, err := GetMessageReceived(clonedBuffer) // first read the clone here...
+			fmt.Println(receivedTime)
 			if err != nil {
 				log.Printf("Validity %d uid %d: Warning: Unable to parse received time, using dummy", mm.UidValidity, mm.Uid)
 			}
-			if err := c.Append(f.Name, nil, receivedTime, msgBuffer); err != nil { // then read the original here
-				return err
+
+			// buf := []byte("From: <root@nsa.gov>\r\n\r\nHi <3")
+			// size := int64(len(buf))
+			appendCmd := c.Append(f.Name, size, nil)
+			if _, err := appendCmd.Write(buf); err != nil {
+				log.Fatalf("failed to write message: %v", err)
 			}
-			if err := bar.Add64(int64(l)); err != nil {
+			if err := appendCmd.Close(); err != nil {
+				log.Fatalf("failed to close message: %v", err)
+			}
+			if _, err := appendCmd.Wait(); err != nil {
+				log.Fatalf("APPEND command failed: %v", err)
+			}
+
+			// if err := c.Append(f.Name, nil, receivedTime, msgBuffer); err != nil { // then read the original here
+			// 	log.Fatal(err)
+			// }
+			if err := bar.Add64(size); err != nil {
 				return err
 			}
 		}

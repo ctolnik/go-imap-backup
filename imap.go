@@ -18,32 +18,50 @@ package main
 
 import (
 	"fmt"
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/client"
-	pb "github.com/schollz/progressbar/v3"
+	"log"
+
+	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
+	client "github.com/emersion/go-imap/v2/imapclient"
+
+	// "github.com/emersion/go-imap"
+	// "github.com/emersion/go-imap/client"
 	"io"
 	"math"
 	"sort"
 	"time"
+
+	pb "github.com/schollz/progressbar/v3"
 )
 
 // Retrieves a list of all folders from an Imap server
 func ListFolders(c *client.Client) ([]string, error) {
 	// Query list of folders
-	mailboxesCh := make(chan *imap.MailboxInfo, 10)
-	done := make(chan error, 1)
-	go func() {
-		done <- c.List("", "*", mailboxesCh)
-	}()
-
+	folders, err := c.List("", "%", nil).Collect()
+	if err != nil {
+		log.Fatalf("failed to list folders: %v", err)
+	}
+	log.Printf("Found %v folders", len(folders))
 	// Collect results
 	mailboxes := []string{}
-	for m := range mailboxesCh {
-		mailboxes = append(mailboxes, m.Name)
+	for _, folder := range folders {
+		log.Printf(" - %v", folder.Mailbox)
+		mailboxes = append(mailboxes, folder.Mailbox)
 	}
-	if err := <-done; err != nil {
-		return nil, err
-	}
+
+	// mailboxesCh := make(chan *imap.MailboxInfo, 10)
+	// listOptions := &imap.ListOptions{ReturnSubscribed: true}
+	// done := make(chan error, 1)
+	// go func() {
+	// 	done <- c.List("", "*", mailboxesCh)
+	// }()
+
+	// for m := range mailboxesCh {
+	// 	mailboxes = append(mailboxes, m.Name)
+	// }
+	// if err := <-done; err != nil {
+	// 	return nil, err
+	// }
 
 	sort.Strings(mailboxes)
 	return mailboxes, nil
@@ -52,33 +70,32 @@ func ListFolders(c *client.Client) ([]string, error) {
 // Creates local metadata for an imap folder by fetching metadata for all its messages
 func NewImapFolderMeta(c *client.Client, folderName string) (ifm *ImapFolderMeta, err error) {
 	ifm = &ImapFolderMeta{Name: folderName}
-	mbox, err := c.Select(folderName, true)
+	selectedMbox, err := c.Select(folderName, nil).Wait()
 	if err != nil {
+		log.Printf("Failed to select %s: %v \n", folderName, err)
+		log.Printf("Folder %s doesn't exist \n", folderName)
 		return nil, err
 	}
-	ifm.UidValidity = mbox.UidValidity
-	if mbox.Messages == 0 {
+	log.Printf("%s contains %v messages", folderName, selectedMbox.NumMessages)
+	ifm.UidValidity = selectedMbox.UIDValidity
+	if selectedMbox.NumMessages == 0 {
 		return ifm, nil
 	}
 
-	seqset := new(imap.SeqSet)
-	seqset.AddRange(1, mbox.Messages)
-	items := []imap.FetchItem{imap.FetchUid, imap.FetchRFC822Size}
-
-	messages := make(chan *imap.Message, 16)
-	done := make(chan error, 1)
-	go func() {
-		done <- c.Fetch(seqset, items, messages)
-	}()
-
-	ifm.Messages = []MessageMeta{}
-	for msg := range messages {
-		d := MessageMeta{SeqNum: msg.SeqNum, UidValidity: mbox.UidValidity, Uid: msg.Uid, Size: msg.Size, Offset: math.MaxUint64}
-		ifm.Messages = append(ifm.Messages, d)
-		ifm.Size += uint64(msg.Size)
+	seqSet := imap.SeqSetNum(1)
+	seqSet.AddRange(1, selectedMbox.NumMessages)
+	fetchOptions := &imap.FetchOptions{RFC822Size: true, UID: true}
+	messages, err := c.Fetch(seqSet, fetchOptions).Collect()
+	if err != nil {
+		log.Fatalf("failed to fetch messages in %s: %v", folderName, err)
 	}
-	if err := <-done; err != nil {
-		return nil, err
+	ifm.Messages = []MessageMeta{}
+	for message := range messages {
+		msg := messages[message]
+		fmt.Println(msg)
+		d := MessageMeta{SeqNum: msg.SeqNum, UidValidity: selectedMbox.UIDValidity, Uid: uint32(msg.UID), Size: uint32(msg.RFC822Size), Offset: math.MaxUint64}
+		ifm.Messages = append(ifm.Messages, d)
+		ifm.Size += uint64(msg.RFC822Size)
 	}
 	return ifm, nil
 }
@@ -88,104 +105,148 @@ func NewImapFolderMeta(c *client.Client, folderName string) (ifm *ImapFolderMeta
 // reporting download progress in bytes to the progress bar after every message
 func (f *ImapFolderMeta) DownloadTo(c *client.Client, lf *LocalFolder, bar *pb.ProgressBar) error {
 	// Select mailbox on server
-	mbox, err := c.Select(f.Name, true)
+	selectedMbox, err := c.Select(f.Name, nil).Wait()
 	if err != nil {
-		return err
+		log.Fatalf("failed to select %s: %v", f.Name, err)
 	}
-	if mbox.UidValidity != f.UidValidity {
+	if selectedMbox.UIDValidity != f.UidValidity {
 		return fmt.Errorf("UidValidity changed from %d to %d, this should not happen",
-			mbox.UidValidity, f.UidValidity)
+			selectedMbox.UIDValidity, f.UidValidity)
+	}
+	seqSet := imap.SeqSetNum(1)
+	seqSet.AddRange(1, selectedMbox.NumMessages)
+	fetchOptions := &imap.FetchOptions{RFC822Size: true, UID: true, Envelope: true, BodySection: []*imap.FetchItemBodySection{{}}}
+	fetchCmd := c.Fetch(seqSet, fetchOptions)
+	defer fetchCmd.Close()
+	for {
+		msg := fetchCmd.Next()
+		log.Printf("Start Work on items \n")
+		if msg == nil {
+			break
+		}
+		var (
+			env  string
+			uid  uint32
+			size int64
+			date time.Time
+			body []uint8
+		)
+		for {
+			item := msg.Next()
+			if item == nil {
+				break
+			}
+			log.Println(item)
+			switch item := item.(type) {
+			case imapclient.FetchItemDataUID:
+				uid = uint32(item.UID)
+			case imapclient.FetchItemDataRFC822Size:
+				size = item.Size
+			case imapclient.FetchItemDataEnvelope:
+				env = item.Envelope.From[0].Addr()
+				date = item.Envelope.Date
+			case imapclient.FetchItemDataBodySection:
+				bs, err := io.ReadAll(item.Literal)
+				if err != nil {
+					log.Fatalf("failed to read body section: %v", err)
+				}
+				body = bs
+			}
+		}
+		if body != nil {
+			if err := lf.Append(selectedMbox.UIDValidity, uid, env, date, body); err != nil {
+				log.Println("Shit happens. Then we try to save data on disk")
+				log.Fatal(err)
+			}
+			// print progress
+			if err := bar.Add64(size); err != nil {
+				log.Fatal(err)
+			}
+		} else {
+			log.Printf("Body is empty. Skip...")
+		}
+
+	}
+	if err := fetchCmd.Close(); err != nil {
+		log.Fatalf("FETCH command failed: %v", err)
 	}
 
-	// prepare sequence set and trigger download of messages
-	totalSize := uint64(0)
-	seqset := new(imap.SeqSet)
-	for _, message := range f.Messages {
-		seqset.AddNum(message.SeqNum)
-		totalSize += uint64(message.Size)
-	}
+	// // process messages received
+	// for msg := range messages {
+	// 	// print progress
+	// 	if err := bar.Add64(int64(msg.Size)); err != nil {
+	// 		return err
+	// 	}
 
-	section := &imap.BodySectionName{}
-	items := []imap.FetchItem{imap.FetchUid, imap.FetchRFC822Size, imap.FetchEnvelope, section.FetchItem()}
+	// 	// read message into memory
+	// 	r := msg.GetBody(section)
+	// 	if r == nil {
+	// 		return fmt.Errorf("server didn't return message body")
+	// 	}
+	// 	bs, err := io.ReadAll(r)
+	// 	if err != nil {
+	// 		return err
+	// 	}
 
-	messages := make(chan *imap.Message, 16)
-	done := make(chan error, 1)
-	go func() {
-		done <- c.Fetch(seqset, items, messages)
-	}()
-
-	// process messages received
-	for msg := range messages {
-		// print progress
-		if err := bar.Add64(int64(msg.Size)); err != nil {
-			return err
-		}
-
-		// read message into memory
-		r := msg.GetBody(section)
-		if r == nil {
-			return fmt.Errorf("server didn't return message body")
-		}
-		bs, err := io.ReadAll(r)
-		if err != nil {
-			return err
-		}
-
-		var env string
-		if len(msg.Envelope.From)>0 {
-			env = msg.Envelope.From[0].Address()
-		}
-		date := msg.Envelope.Date
-		if err := lf.Append(mbox.UidValidity, msg.Uid, env, date, bs); err != nil {
-			return err
-		}
-	}
-	if err := <-done; err != nil {
-		return err
-	}
+	// 	var env string
+	// 	if len(msg.Envelope.From) > 0 {
+	// 		env = msg.Envelope.From[0].Address()
+	// 	}
+	// 	date := msg.Envelope.Date
+	// 	if err := lf.Append(mbox.UidValidity, msg.Uid, env, date, bs); err != nil {
+	// 		return err
+	// 	}
+	// }
+	// if err := <-done; err != nil {
+	// 	return err
+	// }
 	return nil
 }
 
 // Delete messages before the given time from an Imap server
-func DeleteMessagesBefore(c *client.Client, folderName string, before time.Time) (numDeleted int, err error) {
-	mbox, err := c.Select(folderName, false) // need r/w access
+func DeleteMessagesBefore(c *client.Client, folderName string, before time.Time) (numDeleted int) {
+	// Select mailbox on server
+	selectedMbox, err := c.Select(folderName, nil).Wait()
 	if err != nil {
-		return 0, err
+		log.Fatalf("failed to select %s: %v", folderName, err)
 	}
-	if mbox.Messages == 0 {
-		return 0, nil
+	if selectedMbox.NumMessages == 0 {
+		return 0
 	}
+	uidMsg, err := c.UIDSearch(&imap.SearchCriteria{
+		Before: before,
+	}, nil).Wait()
+	// ids, err := findMessagesBefore(c, before)
+	// if err != nil {
+	// 	return 0, err
+	// }
+	if uidMsg.All != nil {
+		deleteMessages(c, uidMsg.All)
+		return len(uidMsg.AllUIDs())
+	}
+	return 0
+	// if len(ids) == 0 {
+	// 	return 0, nil
+	// }
 
-	ids, err := findMessagesBefore(c, before)
-	if err != nil {
-		return 0, err
-	}
-	if len(ids) == 0 {
-		return 0, nil
-	}
-
-	err = deleteMessages(c, ids)
-	if err != nil {
-		return 0, err
-	}
-	return len(ids), nil
+	// return len(ids), nil
 }
 
-func findMessagesBefore(c *client.Client, before time.Time) ([]uint32, error) {
-	criteria := imap.NewSearchCriteria()
-	criteria.Before = before
-	return c.Search(criteria)
-}
+// func findMessagesBefore(c *client.Client, before time.Time) (imap.NumSet, error) {
+// 	data, err := c.UIDSearch(&imap.SearchCriteria{
+// 		Before: before,
+// 	}, nil).Wait()
+// 	return data.All, err
+// }
 
-func deleteMessages(c *client.Client, ids []uint32) error {
-	seqset := new(imap.SeqSet)
-	seqset.AddNum(ids...)
-
-	item := imap.FormatFlagsOp(imap.AddFlags, true)
-	flags := []interface{}{imap.DeletedFlag}
-	if err := c.Store(seqset, item, flags, nil); err != nil {
-		return err
+func deleteMessages(c *client.Client, ids imap.NumSet) {
+	storeFlags := imap.StoreFlags{
+		Op:     imap.StoreFlagsAdd,
+		Flags:  []imap.Flag{imap.FlagDeleted},
+		Silent: true,
 	}
-
-	return c.Expunge(nil)
+	if err := c.Store(ids, &storeFlags, nil).Close(); err != nil {
+		log.Fatalf("STORE command failed: %v", err)
+	}
+	c.Expunge()
 }
